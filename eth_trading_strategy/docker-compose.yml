@@ -1,0 +1,9 @@
+version: "3.9"
+services:
+  backtest:
+    build: .
+    environment:
+      JESSE_PROJECT: /app
+    volumes:
+      - ./:/app
+    command: ["python", "backtest.py"]
