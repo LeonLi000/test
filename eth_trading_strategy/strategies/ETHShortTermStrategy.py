@@ -17,6 +17,7 @@ fully-optimised production system.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 from dataclasses import dataclass
 from typing import Dict
 
@@ -30,10 +31,18 @@ StrategyBase: type
 utils_module = None
 indicators_module = None
 
-_strategy_spec = importlib.util.find_spec("jesse.strategies")
+try:
+    _strategy_spec = importlib.util.find_spec("jesse.strategies")
+except Exception:  # pragma: no cover - defensive guard for broken installs
+    _strategy_spec = None
+
 if _strategy_spec is not None:
-    StrategyBase = importlib.import_module("jesse.strategies").Strategy
-else:  # pragma: no cover - executed only when Jesse is absent.
+    try:  # pragma: no cover - executed only when Jesse is present
+        StrategyBase = importlib.import_module("jesse.strategies").Strategy
+    except Exception:  # pragma: no cover - fallback when optional deps fail
+        _strategy_spec = None
+
+if _strategy_spec is None:  # pragma: no cover - executed only when Jesse is absent.
     class _FallbackPosition:
         """Very small stand-in for :class:`jesse.models.Position`."""
 
@@ -79,13 +88,25 @@ else:  # pragma: no cover - executed only when Jesse is absent.
         def timeframe(self) -> str:
             return "15m"
 
-_utils_spec = importlib.util.find_spec("jesse.utils")
+try:
+    _utils_spec = importlib.util.find_spec("jesse.utils")
+except Exception:  # pragma: no cover - optional dependency failure
+    _utils_spec = None
 if _utils_spec is not None:
-    utils_module = importlib.import_module("jesse.utils")
+    try:  # pragma: no cover - executed only when Jesse is present
+        utils_module = importlib.import_module("jesse.utils")
+    except Exception:  # pragma: no cover - fallback when optional deps fail
+        utils_module = None
 
-_indicators_spec = importlib.util.find_spec("jesse.indicators")
+try:
+    _indicators_spec = importlib.util.find_spec("jesse.indicators")
+except Exception:  # pragma: no cover - optional dependency failure
+    _indicators_spec = None
 if _indicators_spec is not None:
-    indicators_module = importlib.import_module("jesse.indicators")
+    try:  # pragma: no cover - executed only when Jesse is present
+        indicators_module = importlib.import_module("jesse.indicators")
+    except Exception:  # pragma: no cover - fallback when optional deps fail
+        indicators_module = None
 
 
 # ---------------------------------------------------------------------------
@@ -211,11 +232,12 @@ class IndicatorSnapshot:
 class ETHShortTermStrategy(StrategyBase):
     """Composite indicator strategy for the ETH/USDT pair on a 15m timeframe."""
 
-    risk_per_trade: float = 0.02
-    fixed_stop: float = 0.015
-    fixed_take_profit: float = 0.03
-    atr_multiplier: float = 1.5
-    cooldown_period: int = 4
+    risk_per_trade: float = 0.024
+    fixed_stop: float = 0.014
+    fixed_take_profit: float = 0.028
+    atr_multiplier: float = 1.2
+    cooldown_period: int = 3
+    volume_multiplier: float = 1.15
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -253,14 +275,20 @@ class ETHShortTermStrategy(StrategyBase):
         lows = self._low_prices()
         volumes = self._volumes()
 
-        ema_fast = _ema(closes, period=8)
-        ema_slow = _ema(closes, period=21)
-        ema_trend = _ema(closes, period=55)
-        rsi = _rsi(closes, period=14)
-        macd_line, macd_signal, _ = _macd(closes, fast=12, slow=26, signal=9)
-        bollinger_upper, bollinger_mid, bollinger_lower = _bollinger(closes, period=20, stddev=2)
-        atr = _atr(highs, lows, closes, period=14)
-        volume_sma = _sma(volumes, period=20)
+        window = 400
+        closes_tail = closes[-window:]
+        highs_tail = highs[-window:]
+        lows_tail = lows[-window:]
+        volumes_tail = volumes[-window:]
+
+        ema_fast = _ema(closes_tail, period=8)
+        ema_slow = _ema(closes_tail, period=21)
+        ema_trend = _ema(closes_tail, period=55)
+        rsi = _rsi(closes_tail, period=14)
+        macd_line, macd_signal, _ = _macd(closes_tail, fast=12, slow=26, signal=9)
+        bollinger_upper, bollinger_mid, bollinger_lower = _bollinger(closes_tail, period=20, stddev=2)
+        atr = _atr(highs_tail, lows_tail, closes_tail, period=14)
+        volume_sma = _sma(volumes_tail, period=20)
 
         close = float(closes[-1]) if closes.size else float("nan")
         volume = float(volumes[-1]) if volumes.size else float("nan")
@@ -300,7 +328,7 @@ class ETHShortTermStrategy(StrategyBase):
     def _volume_expansion(self, snapshot: IndicatorSnapshot) -> bool:
         if np.isnan(snapshot.volume) or np.isnan(snapshot.volume_sma):
             return False
-        return snapshot.volume >= snapshot.volume_sma * 1.2
+        return snapshot.volume >= snapshot.volume_sma * self.volume_multiplier
 
     # ------------------------------------------------------------------
     # Jesse strategy interface
